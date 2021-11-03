@@ -1,5 +1,5 @@
 CC=gcc
-# CFLAGS=-I.
+CFLAGS=-Wall -Wextra -Wfloat-equal -Wshadow -Wstrict-overflow=2 -Wwrite-strings -Wswitch-default -Wswitch-enum -O2 -pipe
 OBJ = srec.o
 
 %.o: %.c $(DEPS)

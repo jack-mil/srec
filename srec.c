@@ -1,121 +1,229 @@
+#include <ctype.h>
+#include <stdbool.h>
 #include <stdio.h>
-// #include <stdlib.h>
 
 typedef unsigned char BYTE;
 
-BYTE read_ascii_hex(FILE *__stream);
-int read_address(FILE *__stream, int size);
-void read_data(BYTE *__buf, FILE *__stream, size_t size);
-// _Bool verify_checksum(BYTE *data, size_t size, int byte_count, int address, BYTE sx_sum);
+bool parse_file(FILE *fp);
+bool parse_line(unsigned lineNum, const char *line);
+bool get_byte(const char **s, BYTE *nb);
+bool get_nibble(const char **s, BYTE *nb);
+void printArray(BYTE *__buf, size_t size);
 
 int main(int argc, char *argv[]) {
-	if (argc < 2) {
+	if ( argc < 2 ) {
 		fprintf(stderr, "Usage: ./srec FILE\n");
 		return 1;
 	}
 	FILE *fp = fopen(argv[1], "r");
-	if (fp == NULL) {
+	if ( fp == NULL ) {
 		fprintf(stderr, "Cannot open input file \"%s\"", argv[1]);
 		return 1;
 	}
-	if (fgetc(fp) != 'S') {
-		fprintf(stderr, "Line not a valid S-Record (first char not 'S')\n");
-		return 1;
-	}
-	char mode = fgetc(fp);
-	printf("Type: %c\n", mode);
-	int byte_len = read_ascii_hex(fp);
-	int data_len;
-	printf("Length: %d (0x%02X)\n", byte_len, byte_len);
 
-	int address;
-	BYTE data[64];
-	switch (mode) {
-	// 16-bit address modes
-	case '0':
-		// Skip to next line
-		// while (fgetc(fp) != 0x0A) {
-		// }
-	case '1':
-	case '9':
-		printf("16 bit address\n");
-		address = read_address(fp, 2);
-		data_len = byte_len - 3; // Adjust to length of data (len - address - checksum byte)
-		break;
-	// 24-bit address modes
-	case '2':
-	case '8':
-		printf("24 bit address\n");
-		address = read_address(fp, 3);
-		data_len = byte_len - 4;
-		break;
-	// 32-bit address modes
-	case '3':
-	case '7':
-		printf("32 bit address\n");
-		address = read_address(fp, 4);
-		data_len = byte_len - 5;
-		break;
-	default:
-		printf("Unsupported S record type detected %c\n", mode);
-		return 1;
-		break;
-	}
-
-	printf("Address: 0x%X\n", address);
-	read_data(data, fp, data_len);
-	BYTE chk_sum = read_ascii_hex(fp);
-	printf("Record checksum 0x%02X\n", chk_sum);
-	// if (!verify_checksum(data, data_len, byte_len, address, chk_sum)) {
-	// 	printf("Checksum Failed!\n");
-	// }
+	bool status = parse_file(fp);
 	fclose(fp);
+	return !status;
 }
 
-// _Bool verify_checksum(BYTE *data, size_t size, int byte_count, int address, BYTE sx_sum) {
-// 	unsigned int sum = 0;
-// 	for (size_t i = 0; i < size; i++) {
-// 		sum += data[i];
-// 	}
-// 	BYTE x_sum = ~sum & 0xFF;
-// 	printf("Calculated Checksum 0x%02X\n", x_sum);
-// 	printf("Record checksum 0x%02X\n", sx_sum);
-// 	return x_sum == sx_sum;
-// }
+/**
+ *  Parses the S-Record file pointed by @a fp.
+ *
+ *  @param  fp  pointer to file stream
+ *
+ *  @return  true if parsing was successfully, false otherwise
+ */
+bool parse_file(FILE *fp) {
 
-BYTE read_ascii_hex(FILE *__stream) {
-	unsigned char sixteens;
-
-	unsigned char c = fgetc(__stream);
-	if (c == EOF) {
-		return EOF;
+	unsigned lnNum = 0;
+	char line[100];
+	// Read and process each line of the file
+	// `line` string will be newline-terminated
+	while ( fgets(line, sizeof(line), fp) != NULL ) {
+		lnNum++;
+		printf("-- Line %02d --\n", lnNum);
+		if ( !parse_line(lnNum, line) ) {
+			return false;
+		}
 	}
-	c = (c <= '9') ? (c - '0') : (c - 'A' + 10);
-	sixteens = (c << 4);
-
-	c = fgetc(__stream);
-	if (c == EOF) {
-		return EOF;
-	}
-	c = (c <= '9') ? (c - '0') : (c - 'A' + 10);
-	return (sixteens + c);
+	// If we made it this far, record is valid!
+	return true;
 }
 
-int read_address(FILE *__stream, int size) {
-	int address = 0;
-	for (int i = size - 1; i >= 0; i--) {
-		BYTE byte = read_ascii_hex(__stream);
-		address += (byte << (8 << 8 * i));
-	}
-	return address;
-}
+/**
+ * Parse a single line of an S record file.
+ *
+ * @param  lineNum  line being parsed (for error reporting)
+ * @param  line  string to be parsed
+ *
+ * @return  true is parsing was succesful, false otherwise
+ */
+bool parse_line(unsigned lineNum, const char *line) {
+	// data byte array will store the address and data bytes of the record
+	// (used for address and checksum calculation)
+	BYTE data[50];
 
-void read_data(BYTE *__buf, FILE *__stream, size_t size) {
+	// First check for leading 'S'
+	if ( line[0] != 'S' ) {
+		fprintf(stderr, "Line %d: Not a valid S-Record (first char not 'S')\n", lineNum);
+		return false;
+	}
+
+	// Check record type is valid
+	if ( !isdigit(line[1]) ) {
+		fprintf(stderr, "Line %d: Unsupported record type, found : '%c'\n", lineNum, line[1]);
+		return false;
+	}
+
+	// Make a new string skipping the first 2 characters ("S" and type)
+	const char *s = &line[2];
+
+	// Get the length of this S-Record line
+	BYTE byteCount;
+	if ( !get_byte(&s, &byteCount) ) {
+		return false;
+	}
+
+	// Calculate checksum of all *plain-text* bytes in record
+	// Also stores the data array with bytes starting at address record
+	BYTE checksumCalc = byteCount;
+	for ( int i = 0; i < (byteCount - 1); i++ ) {
+		if ( !get_byte(&s, &data[i]) ) {
+			return false;
+		}
+		checksumCalc += data[i];
+	}
+	// Checksum is the ones compliment of the sum of all 2-char bytes
+	checksumCalc = ~checksumCalc;
+
+	// Read checksum from last byte of record and validate
+	BYTE checksumRead;
+	if ( !get_byte(&s, &checksumRead) ) {
+		return false;
+	}
+
+	if ( checksumRead != checksumCalc ) {
+		fprintf(stderr, "Mismatched checksum 0x%02X, calculated 0x%02X\n", checksumRead, checksumCalc);
+		return false;
+	}
+
+	// Parse the record type to determine the correct address byte length
+	char rcType = line[1];
+	unsigned addr = 0;
+	unsigned addrLen;
+
+	switch ( rcType ) {
+		case '0':
+			addrLen = 2;
+			break;
+		case '1':
+		case '2':
+		case '3':
+			// Address length can be calculated from ascii codes
+			addrLen = rcType - '1' + 2;
+			break;
+		case '7':
+		case '8':
+		case '9':
+			// Address length can be calculated from ascii codes
+			addrLen = '9' - rcType + 2;
+			break;
+		default:
+			printf("Unsupported S record type detected %c\n", line[1]);
+			return false;
+			break;
+	}
+
+	// Calculate the length of actual data bytes.
+	// value from record minus the address length and checksum byte
+	BYTE dataLen = byteCount - addrLen - 1;
+
+	// Use a byte pointer instead of byte array so we can manipulate the size
+	BYTE *x = data;
+	for ( unsigned addrIndex = 0; addrIndex < addrLen; addrIndex++ ) {
+		// Form a integer address value from the address bytes,
+		// shifting first (so only MSB(s) get shifted)  by 8 (one byte)
+		addr <<= 8;
+		// Add the byte to the address, and move pointer to next byte.
+		addr += *x++;
+	}
+
+	// Print formated output
+	printf("Type %c Record, %d byte addresses\n", rcType, addrLen);
+	printf("Address: 0x%0*X\n", addrLen*2, addr); // Pad address to length is clear
+	printf("Record checksum 0x%02X: ✔\n", checksumRead);
 	printf("Data: ");
-	for (size_t i = 0; i < size; i++) {
-		BYTE byte = read_ascii_hex(__stream);
-		printf("%02X ", byte);
-		__buf[i] = byte;
+	printArray(x, dataLen);
+	puts("");
+	return true;
+}
+
+/**
+ * Read 2 hex character from a string @a s and convert 
+ * to single numerical byte, stored in b.
+ *
+ * @param  s  pointer to a string to read from
+ * @param  b  pointer to a byte to store value in
+ *
+ * @return  true if reading was succesful, false otherwise
+ */
+bool get_byte(const char **s, BYTE *b) {
+	BYTE low_nibble, hi_nibble;
+	// Read 2 nibbles (singe ascii characters '0'-'9', 'A'-'F')
+	// Shift the high nibble and concatinate
+	if ( get_nibble(s, &hi_nibble) && get_nibble(s, &low_nibble) ) {
+		*b = hi_nibble << 4 | low_nibble;
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Read a single character from a string @a s and convert 
+ * to number, stored in b.
+ *
+ * @param  s  pointer to a string to read from
+ * @param  b  pointer to a byte to store value in
+ *
+ * @return  true if reading was succesful, false otherwise
+ */
+bool get_nibble(const char **s, BYTE *nb) {
+	// Get the first character in the current string
+	// by dereferencing the pointer to a pointer to a character
+	char ch = **s;
+
+	// Increment the char pointer so the string is consumed
+	*s = *s + 1;
+
+	// Convert the hex digit character to numbers, store in byte `b`
+	if ( (ch >= '0') && (ch <= '9') ) {
+		*nb = ch - '0';
+		return true;
+	}
+
+	if ( (ch >= 'A') && (ch <= 'F') ) {
+		*nb = ch - 'A' + 10;
+		return true;
+	}
+
+	if ( (ch >= 'a') && (ch <= 'f') ) {
+		*nb = ch - 'a' + 10;
+		return true;
+	}
+	fprintf(stderr, "Unexpected character found, '%c'", ch);
+	return false;
+}
+
+/**
+ * Print an array of bytes to screen
+ *
+ * @param  buf  pointer to array of bytes to print
+ * @param  size  number of bytes to print
+ */
+void printArray(BYTE *buf, size_t size) {
+
+	for ( size_t i = 0; i < size; i++ ) {
+		printf("0x%02X ", *buf++);
 	}
 	printf("\n");
 }
