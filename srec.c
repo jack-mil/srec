@@ -2,22 +2,32 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+// ANSI formatting escape codes
+#define RED "\033[1;31m"
+#define GREEN "\033[1;32m"
+#define YELLOW "\033[1;33m"
+#define BLUE "\033[1;34m"
+#define PURPLE "\033[1;35m"
+#define ITALIC "\033[4;3m"
+#define RESET "\033[0m"
+#define END "\033[0m\n"
+
 typedef unsigned char BYTE;
 
 bool parse_file(FILE *fp);
 bool parse_line(unsigned lineNum, const char *line);
 bool get_byte(const char **s, BYTE *nb);
-bool get_nibble(const char **s, BYTE *nb);
+bool get_nybble(const char **s, BYTE *nb);
 void printArray(BYTE *__buf, size_t size);
 
 int main(int argc, char *argv[]) {
 	if ( argc < 2 ) {
-		fprintf(stderr, "\033[1;31mUsage: ./srec FILE\033[0m\n");
+		fprintf(stderr, RED "Usage: ./srec FILE" END);
 		return 1;
 	}
 	FILE *fp = fopen(argv[1], "r");
 	if ( fp == NULL ) {
-		fprintf(stderr, "\033[1;31mCannot open input file \"%s\"\033[0m\n", argv[1]);
+		fprintf(stderr, RED "Cannot open input file \"%s\"" END, argv[1]);
 		return 1;
 	}
 
@@ -41,9 +51,9 @@ bool parse_file(FILE *fp) {
 	// `line` string will be newline-terminated
 	while ( fgets(line, sizeof(line), fp) != NULL ) {
 		lnNum++;
-		printf("\033[1;34m-- Line %02d --\033[0m\n", lnNum);
+		printf(BLUE "-- Line %02d --" RESET "\n", lnNum);
 		if ( !parse_line(lnNum, line) ) {
-			fprintf(stderr, "\033[1;31mError in parsing line\033[0m\n");
+			fprintf(stderr, RED "Error in parsing line" END);
 			return false;
 		}
 	}
@@ -66,13 +76,13 @@ bool parse_line(unsigned lineNum, const char *line) {
 
 	// First check for leading 'S'
 	if ( line[0] != 'S' ) {
-		fprintf(stderr, "\033[1;31mLine %d: Not a valid S-Record (first char not 'S')\033[0m\n", lineNum);
+		fprintf(stderr, RED "Line %d: Not a valid S-Record (first char not 'S')" END, lineNum);
 		return false;
 	}
 
 	// Check record type is valid
 	if ( !isdigit(line[1]) ) {
-		fprintf(stderr, "\033[1;31mLine %d: Unsupported record type, found : '%c'\033[0m\n", lineNum, line[1]);
+		fprintf(stderr, RED "Line %d: Unsupported record type, found : '%c'" END, lineNum, line[1]);
 		return false;
 	}
 
@@ -125,7 +135,7 @@ bool parse_line(unsigned lineNum, const char *line) {
 			addrLen = '9' - rcType + 2;
 			break;
 		default:
-			printf("\033[1;31mUnsupported S record type detected '%c'\033[0m\n", line[1]);
+			printf(RED "Unsupported S record type detected '%c'" END, line[1]);
 			return false;
 			break;
 	}
@@ -139,23 +149,27 @@ bool parse_line(unsigned lineNum, const char *line) {
 	for ( unsigned addrIndex = 0; addrIndex < addrLen; addrIndex++ ) {
 		// Form a integer address value from the address bytes,
 		// shifting first (so only MSB(s) get shifted)  by 8 (one byte)
-		addr <<= 8;
+		addr = addr << 8;
 		// Add the byte to the address, and move pointer to next byte.
 		addr += *x++;
 	}
 
 	// Print formated output
 	printf("Type: %c; %d byte address\n", rcType, addrLen);
-	printf("Address: \033[1;35m0x%0*X\033[0m\n", addrLen * 2, addr); // Pad address to length is clear
-	printf("Record checksum \033[4;3m0x%02X\033[0m: ", checksumRead);
-	if ( checksumRead != checksumCalc ) {
-		printf("\033[1;31m❌ Fail (calculated 0x%02X)\033[0m\n", checksumCalc);
-	} else {
-		printf("\033[1;32m✔ Good\033[m\n");
+	printf("Address: " PURPLE "0x%0*X", addrLen * 2, addr); // Pad address so length is clear
+	if ( dataLen > 0 ) {
+		printf(" - 0x%0*X", addrLen * 2, addr + (dataLen - 1)); // print ending address of data location
 	}
-	printf("Data:\033[1;33m ");
+	puts(RESET); // puts includes a /n newline
+	printf("Record checksum " ITALIC "0x%02X" RESET ": ", checksumRead);
+	if ( checksumRead != checksumCalc ) {
+		printf(RED "❌ Fail (calculated " ITALIC "0x%02X" RESET RED ")" END, checksumCalc);
+	} else {
+		printf(GREEN "✔ Good" END);
+	}
+	printf("Data: " YELLOW);
 	printArray(x, dataLen);
-	puts("\033[0m");
+	puts(END);
 	return true;
 }
 
@@ -172,7 +186,7 @@ bool get_byte(const char **s, BYTE *b) {
 	BYTE low_nibble, hi_nibble;
 	// Read 2 nibbles (singe ascii characters '0'-'9', 'A'-'F')
 	// Shift the high nibble and concatinate
-	if ( get_nibble(s, &hi_nibble) && get_nibble(s, &low_nibble) ) {
+	if ( get_nybble(s, &hi_nibble) && get_nybble(s, &low_nibble) ) {
 		*b = hi_nibble << 4 | low_nibble;
 		return true;
 	}
@@ -188,7 +202,7 @@ bool get_byte(const char **s, BYTE *b) {
  *
  * @return  true if reading was succesful, false otherwise
  */
-bool get_nibble(const char **s, BYTE *nb) {
+bool get_nybble(const char **s, BYTE *nb) {
 	// Get the first character in the current string
 	// by dereferencing the pointer to a pointer to a character
 	char ch = **s;
@@ -211,7 +225,7 @@ bool get_nibble(const char **s, BYTE *nb) {
 		*nb = ch - 'a' + 10;
 		return true;
 	}
-	fprintf(stderr, "\033[1;31mUnexpected character found, '%c'\033[0m\n", ch);
+	fprintf(stderr, RED "Unexpected character found, '%c'" RESET "\n", ch);
 	return false;
 }
 
@@ -223,11 +237,10 @@ bool get_nibble(const char **s, BYTE *nb) {
  */
 void printArray(BYTE *buf, size_t size) {
 
-	if(size ==0 ){
+	if ( size == 0 ) {
 		printf("--");
 	}
 	for ( size_t i = 0; i < size; i++ ) {
 		printf("0x%02X ", *buf++);
 	}
-	printf("\n");
 }
